@@ -16,6 +16,96 @@ db = client[DATABASE_NAME]
 users_collection = db["users"]
 products_collection = db["products"]
 interactions_collection = db["interactions"]
+cart_collection = db["cart"]
+
+
+@app.route("/cart", methods=["POST"])
+@jwt_required()
+def add_to_cart():
+    user_id = get_jwt_identity()
+    data = request.json
+    product_id = data.get("product_id")
+    quantity = data.get("quantity", 1)
+
+    cart = cart_collection.find_one({"user_id": user_id})
+    if not cart:
+        cart = {
+            "user_id": user_id,
+            "items": [],
+            "created_at": datetime.datetime.utcnow(),
+            "updated_at": datetime.datetime.utcnow()
+        }
+        cart_id = cart_collection.insert_one(cart).inserted_id
+        cart["_id"] = cart_id
+
+    item_found = False
+    for item in cart["items"]:
+        if item["product_id"] == product_id:
+            item["quantity"] += quantity
+            item_found = True
+            break
+
+    if not item_found:
+        cart["items"].append({"product_id": ObjectId(product_id), "quantity": quantity})
+
+    cart["updated_at"] = datetime.datetime.utcnow()
+    cart_collection.update_one({"_id": cart["_id"]}, {"$set": cart})
+
+    return jsonify({"message": "Item added to cart", "cart": format_id(cart)}), 200
+
+
+@app.route("/cart", methods=["GET"])
+@jwt_required()
+def view_cart():
+    user_id = get_jwt_identity()
+    cart = cart_collection.find_one({"user_id": user_id})
+    if not cart:
+        return jsonify({"message": "Cart is empty"}), 404
+
+    detailed_items = []
+    for item in cart["items"]:
+        product = products_collection.find_one({"_id": ObjectId(item["product_id"])})
+        if product:
+            product_data = {
+                "product_id": str(item["product_id"]),
+                "name": product["name"],
+                "price": product["price"],
+                "quantity": item["quantity"],
+                "total_price": product["price"] * item["quantity"]
+            }
+            detailed_items.append(product_data)
+
+    return jsonify({"cart": detailed_items}), 200
+
+
+# 4. Remove Item from Cart
+@app.route("/cart", methods=["DELETE"])
+@jwt_required()
+def remove_from_cart():
+    user_id = get_jwt_identity()
+    product_name = request.json.get("product_name")
+
+    # Find the product by name
+    product = products_collection.find_one({"name": product_name})
+    if not product:
+        return jsonify({"message": "Product not found"}), 404
+
+    product_id = product["_id"]  # Get the product ID from the found product
+
+    # Find the user's cart
+    cart = cart_collection.find_one({"user_id": user_id})
+    if not cart:
+        return jsonify({"message": "Cart not found"}), 404
+
+    # Remove the specified product from the cart items
+    cart["items"] = [item for item in cart["items"] if item["product_id"] != product_id]
+
+    # Update the cart in the database
+    cart["updated_at"] = datetime.datetime.utcnow()
+    cart_collection.update_one({"_id": cart["_id"]}, {"$set": cart})
+
+    # Convert ObjectId fields to string before returning
+    return jsonify({"message": "Item removed from cart", "cart": format_id(cart)}), 200
 
 
 # Helper function to format ObjectId for JSON response
