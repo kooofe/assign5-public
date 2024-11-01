@@ -18,6 +18,10 @@ products_collection = db["products"]
 interactions_collection = db["interactions"]
 cart_collection = db["cart"]
 
+# Helper function to check user role
+def is_admin(user_id):
+    user = users_collection.find_one({"_id": ObjectId(user_id)})
+    return user and user.get("role") == "admin"
 
 @app.route("/cart", methods=["POST"])
 @jwt_required()
@@ -114,12 +118,27 @@ def format_id(document):
     return document
 
 
-# 1. User Registration
+# 1. User Registration with Duplicate Check
 @app.route("/register", methods=["POST"])
 def register():
     data = request.json
-    data["password"] = generate_password_hash(data["password"])
-    user_id = users_collection.insert_one(data).inserted_id
+    email = data.get("email")
+    name = data.get("name")
+    password = data.get("password")
+
+    # Check if email or name already exists
+    if users_collection.find_one({"email": email}) or users_collection.find_one({"name": name}):
+        return jsonify({"message": "Email or username already exists"}), 400
+
+    hashed_password = generate_password_hash(password)
+    user_data = {
+        "name": name,
+        "email": email,
+        "password": hashed_password,
+        "role": data.get("role", "user"),  # Default to 'user' role
+        "created_at": datetime.datetime.utcnow()
+    }
+    user_id = users_collection.insert_one(user_data).inserted_id
     return jsonify({"message": "User registered", "user_id": str(user_id)}), 201
 
 
@@ -150,14 +169,19 @@ def user_profile():
         return jsonify({"message": "Profile updated"}), 200
 
 
-# 4. Add Product to Catalog
+# 3. Add Product (Admin Only)
 @app.route("/products", methods=["POST"])
 @jwt_required()
 def add_product():
+    user_id = get_jwt_identity()
+
+    # Check if the user is an admin
+    if not is_admin(user_id):
+        return jsonify({"message": "Access denied: Admins only"}), 403
+
     data = request.json
     product_id = products_collection.insert_one(data).inserted_id
     return jsonify({"message": "Product added", "product_id": str(product_id)}), 201
-
 
 # 5. Get Product Catalog with Search
 @app.route("/products", methods=["GET"])
