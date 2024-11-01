@@ -1,5 +1,5 @@
 from flask import Flask, request, jsonify
-from pymongo import MongoClient
+from pymongo import MongoClient, DESCENDING
 from bson.objectid import ObjectId
 from flask_jwt_extended import JWTManager, create_access_token, jwt_required, get_jwt_identity
 from werkzeug.security import generate_password_hash, check_password_hash
@@ -18,12 +18,13 @@ products_collection = db["products"]
 interactions_collection = db["interactions"]
 
 
+# Helper function to format ObjectId for JSON response
 def format_id(document):
     document["_id"] = str(document["_id"])
     return document
 
 
-# 1. User Registration with Password Hashing
+# 1. User Registration
 @app.route("/register", methods=["POST"])
 def register():
     data = request.json
@@ -44,54 +45,22 @@ def login():
     return jsonify({"message": "Invalid credentials"}), 401
 
 
-from bson import ObjectId
-from flask import jsonify
-from flask_jwt_extended import jwt_required, get_jwt_identity
-
-@app.route("/user/history", methods=["GET"])
+# 3. User Profile Retrieval and Update
+@app.route("/profile", methods=["GET", "PUT"])
 @jwt_required()
-def get_user_history():
-    # Retrieve the current user's ID as a string
-    user_id = str(get_jwt_identity())
-    print("User ID for history retrieval:", user_id)  # Debugging line
+def user_profile():
+    user_id = get_jwt_identity()
+    if request.method == "GET":
+        user = users_collection.find_one({"_id": ObjectId(user_id)}, {"password": 0})
+        return jsonify(format_id(user)), 200
 
-    # Query interactions using user_id as a string
-    interactions = list(interactions_collection.find({"user_id": user_id}).sort("timestamp", -1))
-    print("Interactions retrieved:", interactions)  # Debugging line
+    elif request.method == "PUT":
+        data = request.json
+        users_collection.update_one({"_id": ObjectId(user_id)}, {"$set": data})
+        return jsonify({"message": "Profile updated"}), 200
 
-    if not interactions:
-        print("No interactions found for user:", user_id)
-        return jsonify({"message": "No interactions found"}), 404
 
-    # Convert product_ids to ObjectId for querying products_collection
-    product_ids = [ObjectId(interaction["product_id"]) for interaction in interactions]
-    products = {str(product["_id"]): product for product in products_collection.find({"_id": {"$in": product_ids}})}
-    print("Products retrieved based on interactions:", products)  # Debugging line
-
-    # Build the history list with product details
-    history = []
-    for interaction in interactions:
-        product_id = str(interaction["product_id"])
-        product = products.get(product_id)
-        if product:
-            history_item = {
-                "product": {
-                    "name": product["name"],
-                    "description": product["description"],
-                    "category": product["category"],
-                    "price": product["price"],
-                },
-                "interaction_type": interaction["interaction_type"],
-                "timestamp": interaction["timestamp"]
-            }
-            print("History item added:", history_item)  # Debugging line
-            history.append(history_item)
-        else:
-            print(f"Product with ID {product_id} not found in products collection")  # Debugging line
-
-    return jsonify(history), 200
-
-# 3. Protected Route: Add Product to Catalog
+# 4. Add Product to Catalog
 @app.route("/products", methods=["POST"])
 @jwt_required()
 def add_product():
@@ -100,14 +69,23 @@ def add_product():
     return jsonify({"message": "Product added", "product_id": str(product_id)}), 201
 
 
-# 4. Public Route: Get Product Catalog
+# 5. Get Product Catalog with Search
 @app.route("/products", methods=["GET"])
 def get_products():
-    products = list(products_collection.find())
+    query = {}
+    name = request.args.get("name")
+    category = request.args.get("category")
+
+    if name:
+        query["name"] = {"$regex": name, "$options": "i"}
+    if category:
+        query["category"] = category
+
+    products = list(products_collection.find(query))
     return jsonify([format_id(product) for product in products]), 200
 
 
-# 5. Record User Interaction (view, like, purchase)
+# 6. Record User Interaction (view, like, purchase)
 @app.route("/interactions", methods=["POST"])
 @jwt_required()
 def add_interaction():
@@ -119,13 +97,23 @@ def add_interaction():
     return jsonify({"message": "Interaction recorded", "interaction_id": str(interaction_id)}), 201
 
 
-# 6. Get Recommendations for User
+# 7. Get User Interaction History
+@app.route("/history", methods=["GET"])
+@jwt_required()
+def get_history():
+    user_id = get_jwt_identity()
+    interactions = list(interactions_collection.find({"user_id": user_id}).sort("timestamp", DESCENDING))
+    return jsonify([format_id(interaction) for interaction in interactions]), 200
+
+
+# 8. Get Recommendations for User (Collaborative Filtering)
 @app.route("/recommendations", methods=["GET"])
 @jwt_required()
 def get_recommendations():
     user_id = get_jwt_identity()
 
-    # Collaborative filtering: Find top products based on similar user interactions
+    # Collaborative filtering based on item-based interactions
+    # Find popular products among other users who interacted with the same items
     pipeline = [
         {"$match": {"user_id": {"$ne": user_id}}},
         {"$group": {"_id": "$product_id", "interactions_count": {"$sum": 1}}},
@@ -141,8 +129,6 @@ def get_recommendations():
         "recommendations": [format_id(product) for product in recommendations]
     }), 200
 
-
-# Protected Route: Logout (not required since JWTs are stateless)
 
 # Start the Flask app
 if __name__ == "__main__":

@@ -1,49 +1,63 @@
 from pymongo import MongoClient
 from werkzeug.security import generate_password_hash
-from config import MONGO_URI, DATABASE_NAME
+import random
+import datetime
 
-# Initialize MongoDB client
+# Database connection
+MONGO_URI = "mongodb://localhost:27017/ecommerce_db"
 client = MongoClient(MONGO_URI)
-db = client[DATABASE_NAME]
-users_collection = db["users"]
-products_collection = db["products"]
+db = client["ecommerce_db"]
 
-# Sample Users
-users = [
-    {"name": "Alice", "email": "alice@example.com", "password": generate_password_hash("password1")},
-    {"name": "Bob", "email": "bob@example.com", "password": generate_password_hash("password2")},
-    {"name": "Charlie", "email": "charlie@example.com", "password": generate_password_hash("password3")},
-    {"name": "Diana", "email": "diana@example.com", "password": generate_password_hash("password4")}
-]
+# Clear existing data
+db["users"].delete_many({})
+db["products"].delete_many({})
+db["interactions"].delete_many({})
 
-# Insert users
-users_collection.insert_many(users)
-print("Users inserted")
+# Generate Sample Users
+user_names = ["Alice", "Bob", "Charlie", "David", "Eve", "Frank", "Grace", "Heidi", "Ivan", "Judy"]
+sample_users = []
 
-# Sample Products
-products = [
-    {"name": "Laptop", "description": "A high-end gaming laptop", "category": "Electronics", "price": 1500.99},
-    {"name": "Smartphone", "description": "Latest model with excellent camera", "category": "Electronics", "price": 999.99},
-    {"name": "Headphones", "description": "Noise-canceling headphones", "category": "Audio", "price": 199.99},
-    {"name": "Smartwatch", "description": "Track your fitness and notifications", "category": "Wearable", "price": 299.99},
-    {"name": "Camera", "description": "Professional DSLR camera", "category": "Photography", "price": 1200.00},
-    {"name": "Tablet", "description": "Portable and powerful tablet", "category": "Electronics", "price": 400.00},
-    {"name": "Desk Lamp", "description": "LED lamp with adjustable brightness", "category": "Home", "price": 29.99},
-    {"name": "Backpack", "description": "Durable and stylish backpack", "category": "Accessories", "price": 49.99},
-    {"name": "Gaming Mouse", "description": "Precision mouse with RGB lighting", "category": "Electronics", "price": 59.99},
-    {"name": "Mechanical Keyboard", "description": "Tactile and durable keyboard", "category": "Electronics", "price": 89.99},
-    {"name": "Coffee Maker", "description": "Brew the perfect cup of coffee", "category": "Kitchen", "price": 79.99},
-    {"name": "Microwave", "description": "Compact microwave with quick heat settings", "category": "Kitchen", "price": 149.99},
-    {"name": "Vacuum Cleaner", "description": "High suction vacuum cleaner", "category": "Home", "price": 199.99},
-    {"name": "Blender", "description": "High-speed blender for smoothies", "category": "Kitchen", "price": 69.99},
-    {"name": "Yoga Mat", "description": "Non-slip yoga mat", "category": "Fitness", "price": 25.99},
-    {"name": "Treadmill", "description": "Electric treadmill for indoor workouts", "category": "Fitness", "price": 599.99},
-    {"name": "Camping Tent", "description": "Spacious tent for 4 people", "category": "Outdoor", "price": 129.99},
-    {"name": "Binoculars", "description": "High-quality binoculars for outdoor adventures", "category": "Outdoor", "price": 89.99},
-    {"name": "Electric Scooter", "description": "Eco-friendly electric scooter", "category": "Transportation", "price": 450.00},
-    {"name": "Mountain Bike", "description": "Durable bike for off-road trails", "category": "Fitness", "price": 850.00}
-]
+for name in user_names:
+    user = {
+        "name": f"{name} Johnson",
+        "email": f"{name.lower()}@example.com",
+        "password": generate_password_hash("password123"),
+        "age": random.randint(20, 60),
+        "preferences": random.sample(["Electronics", "Books", "Clothing", "Shoes", "Toys", "Sports"], 2)
+    }
+    sample_users.append(user)
 
-# Insert products
-products_collection.insert_many(products)
-print("Products inserted")
+user_ids = db["users"].insert_many(sample_users).inserted_ids
+
+# Generate Sample Products
+categories = ["Electronics", "Books", "Clothing", "Shoes", "Toys", "Sports"]
+sample_products = []
+
+for i in range(20):
+    product = {
+        "name": f"Product {i+1}",
+        "description": f"Description for product {i+1}",
+        "category": random.choice(categories),
+        "price": round(random.uniform(10, 500), 2)
+    }
+    sample_products.append(product)
+
+product_ids = db["products"].insert_many(sample_products).inserted_ids
+
+# Generate Sample Interactions
+interaction_types = ["view", "like", "purchase"]
+sample_interactions = []
+
+for user_id in user_ids:
+    for _ in range(random.randint(3, 10)):  # Each user interacts with a few products
+        interaction = {
+            "user_id": str(user_id),
+            "product_id": str(random.choice(product_ids)),
+            "interaction_type": random.choice(interaction_types),
+            "timestamp": datetime.datetime.utcnow() - datetime.timedelta(days=random.randint(0, 30))  # Random date within the last month
+        }
+        sample_interactions.append(interaction)
+
+db["interactions"].insert_many(sample_interactions)
+
+print("Sample data generated successfully.")
