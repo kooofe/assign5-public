@@ -5,8 +5,10 @@ from flask_jwt_extended import JWTManager, create_access_token, jwt_required, ge
 from werkzeug.security import generate_password_hash, check_password_hash
 from config import MONGO_URI, DATABASE_NAME, JWT_SECRET_KEY
 import datetime
+from flask_cors import CORS
 
 app = Flask(__name__)
+CORS(app)
 app.config["JWT_SECRET_KEY"] = JWT_SECRET_KEY
 jwt = JWTManager(app)
 
@@ -16,101 +18,7 @@ db = client[DATABASE_NAME]
 users_collection = db["users"]
 products_collection = db["products"]
 interactions_collection = db["interactions"]
-cart_collection = db["cart"]
-
-# Helper function to check user role
-def is_admin(user_id):
-    user = users_collection.find_one({"_id": ObjectId(user_id)})
-    return user and user.get("role") == "admin"
-
-@app.route("/cart", methods=["POST"])
-@jwt_required()
-def add_to_cart():
-    user_id = get_jwt_identity()
-    data = request.json
-    product_id = data.get("product_id")
-    quantity = data.get("quantity", 1)
-
-    cart = cart_collection.find_one({"user_id": user_id})
-    if not cart:
-        cart = {
-            "user_id": user_id,
-            "items": [],
-            "created_at": datetime.datetime.utcnow(),
-            "updated_at": datetime.datetime.utcnow()
-        }
-        cart_id = cart_collection.insert_one(cart).inserted_id
-        cart["_id"] = cart_id
-
-    item_found = False
-    for item in cart["items"]:
-        if item["product_id"] == product_id:
-            item["quantity"] += quantity
-            item_found = True
-            break
-
-    if not item_found:
-        cart["items"].append({"product_id": ObjectId(product_id), "quantity": quantity})
-
-    cart["updated_at"] = datetime.datetime.utcnow()
-    cart_collection.update_one({"_id": cart["_id"]}, {"$set": cart})
-
-    return jsonify({"message": "Item added to cart", "cart": format_id(cart)}), 200
-
-
-@app.route("/cart", methods=["GET"])
-@jwt_required()
-def view_cart():
-    user_id = get_jwt_identity()
-    cart = cart_collection.find_one({"user_id": user_id})
-    if not cart:
-        return jsonify({"message": "Cart is empty"}), 404
-
-    detailed_items = []
-    for item in cart["items"]:
-        product = products_collection.find_one({"_id": ObjectId(item["product_id"])})
-        if product:
-            product_data = {
-                "product_id": str(item["product_id"]),
-                "name": product["name"],
-                "price": product["price"],
-                "quantity": item["quantity"],
-                "total_price": product["price"] * item["quantity"]
-            }
-            detailed_items.append(product_data)
-
-    return jsonify({"cart": detailed_items}), 200
-
-
-# 4. Remove Item from Cart
-@app.route("/cart", methods=["DELETE"])
-@jwt_required()
-def remove_from_cart():
-    user_id = get_jwt_identity()
-    product_name = request.json.get("product_name")
-
-    # Find the product by name
-    product = products_collection.find_one({"name": product_name})
-    if not product:
-        return jsonify({"message": "Product not found"}), 404
-
-    product_id = product["_id"]  # Get the product ID from the found product
-
-    # Find the user's cart
-    cart = cart_collection.find_one({"user_id": user_id})
-    if not cart:
-        return jsonify({"message": "Cart not found"}), 404
-
-    # Remove the specified product from the cart items
-    cart["items"] = [item for item in cart["items"] if item["product_id"] != product_id]
-
-    # Update the cart in the database
-    cart["updated_at"] = datetime.datetime.utcnow()
-    cart_collection.update_one({"_id": cart["_id"]}, {"$set": cart})
-
-    # Convert ObjectId fields to string before returning
-    return jsonify({"message": "Item removed from cart", "cart": format_id(cart)}), 200
-
+cart_collection = db["carts"]
 
 # Helper function to format ObjectId for JSON response
 def format_id(document):
@@ -118,27 +26,12 @@ def format_id(document):
     return document
 
 
-# 1. User Registration with Duplicate Check
+# 1. User Registration
 @app.route("/register", methods=["POST"])
 def register():
     data = request.json
-    email = data.get("email")
-    name = data.get("name")
-    password = data.get("password")
-
-    # Check if email or name already exists
-    if users_collection.find_one({"email": email}) or users_collection.find_one({"name": name}):
-        return jsonify({"message": "Email or username already exists"}), 400
-
-    hashed_password = generate_password_hash(password)
-    user_data = {
-        "name": name,
-        "email": email,
-        "password": hashed_password,
-        "role": data.get("role", "user"),  # Default to 'user' role
-        "created_at": datetime.datetime.utcnow()
-    }
-    user_id = users_collection.insert_one(user_data).inserted_id
+    data["password"] = generate_password_hash(data["password"])
+    user_id = users_collection.insert_one(data).inserted_id
     return jsonify({"message": "User registered", "user_id": str(user_id)}), 201
 
 
@@ -169,19 +62,14 @@ def user_profile():
         return jsonify({"message": "Profile updated"}), 200
 
 
-# 3. Add Product (Admin Only)
+# 4. Add Product to Catalog
 @app.route("/products", methods=["POST"])
 @jwt_required()
 def add_product():
-    user_id = get_jwt_identity()
-
-    # Check if the user is an admin
-    if not is_admin(user_id):
-        return jsonify({"message": "Access denied: Admins only"}), 403
-
     data = request.json
     product_id = products_collection.insert_one(data).inserted_id
     return jsonify({"message": "Product added", "product_id": str(product_id)}), 201
+
 
 # 5. Get Product Catalog with Search
 @app.route("/products", methods=["GET"])
@@ -210,6 +98,96 @@ def add_interaction():
     interaction_id = interactions_collection.insert_one(data).inserted_id
     return jsonify({"message": "Interaction recorded", "interaction_id": str(interaction_id)}), 201
 
+@app.route("/like", methods=["POST"])
+@jwt_required()
+def like_product():
+    user_id = get_jwt_identity()
+    product_id = request.json.get("product_id")
+    liked = request.json.get("liked")  # True to like, False to unlike
+
+    # Update or insert like status in interactions collection
+    interactions_collection.update_one(
+        {"user_id": user_id, "product_id": product_id},
+        {"$set": {"liked": liked, "timestamp": datetime.datetime.utcnow()}},
+        upsert=True
+    )
+
+    return jsonify({"message": "Product like status updated", "liked": liked}), 200
+@app.route("/like/status", methods=["GET"])
+@jwt_required()
+def get_like_status():
+    user_id = get_jwt_identity()
+    product_id = request.args.get("product_id")
+
+    interaction = interactions_collection.find_one(
+        {"user_id": user_id, "product_id": product_id},
+        {"liked": 1}
+    )
+
+    liked = interaction.get("liked", False) if interaction else False
+    return jsonify({"product_id": product_id, "liked": liked}), 200
+@app.route("/cart/add", methods=["POST"])
+@jwt_required()
+def add_to_cart():
+    user_id = get_jwt_identity()
+    product_id = request.json.get("product_id")
+    quantity = request.json.get("quantity", 1)  # Default to 1 if not specified
+
+    # Update or insert the product in the user's cart
+    cart_collection.update_one(
+        {"user_id": user_id, "product_id": product_id},
+        {"$inc": {"quantity": quantity}},  # Increment quantity if already in cart
+        upsert=True
+    )
+
+    return jsonify({"message": "Product added to cart", "product_id": product_id, "quantity": quantity}), 200
+
+
+@app.route("/cart", methods=["GET"])
+@jwt_required()
+def get_cart():
+    user_id = get_jwt_identity()
+
+    # Find all cart items for the user
+    cart_items = list(cart_collection.find({"user_id": user_id}))
+    for item in cart_items:
+        item["_id"] = str(item["_id"])
+
+    return jsonify(cart_items), 200
+
+
+@app.route("/history", methods=["GET"])
+@jwt_required()
+def get_interaction_history():
+    user_id = get_jwt_identity()
+
+    # Get liked products
+    liked_products = list(interactions_collection.find({"user_id": user_id, "liked": True}))
+    for product in liked_products:
+        product["_id"] = str(product["_id"])
+        product["product_id"] = str(product["product_id"])
+
+    # Get items in the cart
+    cart_items = list(cart_collection.find({"user_id": user_id}))
+    for item in cart_items:
+        item["_id"] = str(item["_id"])
+        item["product_id"] = str(item["product_id"])
+
+    return jsonify({
+        "liked_products": liked_products,
+        "cart_items": cart_items
+    }), 200
+
+@app.route("/cart/remove", methods=["DELETE"])
+@jwt_required()
+def remove_from_cart():
+    user_id = get_jwt_identity()
+    product_id = request.json.get("product_id")
+
+    # Remove the item from the user's cart
+    cart_collection.delete_one({"user_id": user_id, "product_id": product_id})
+
+    return jsonify({"message": "Product removed from cart", "product_id": product_id}), 200
 
 # 7. Get User Interaction History
 @app.route("/history", methods=["GET"])
@@ -243,7 +221,10 @@ def get_recommendations():
         "recommendations": [format_id(product) for product in recommendations]
     }), 200
 
+@app.route('/ping', methods=['GET'])
+def ping():
+    return jsonify({"message": "Pong!"}), 200
 
 # Start the Flask app
 if __name__ == "__main__":
-    app.run(debug=True)
+    app.run(port=5001, debug=True)
